@@ -205,6 +205,13 @@ export interface AdminApiSettingsResponse {
   saveMode: "blank-secret-keeps-existing-value";
 }
 
+export interface AdminAuthConfigResponse {
+  ok: boolean;
+  configured: boolean;
+  supabaseUrl: string;
+  publishableKey: string;
+}
+
 export interface CallbridgeEvent {
   type: string;
   payload: CallSession | { callSession?: CallSession; delta?: string; final?: boolean; [key: string]: unknown };

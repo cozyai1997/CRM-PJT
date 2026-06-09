@@ -50,8 +50,33 @@ Render의 `Environment` 메뉴에서 아래 값을 입력합니다. API 키는 �
 | `CALLBRIDGE_API_KEY` | Callbridge API Key |
 | `CALLBRIDGE_BASE_URL` | `https://bnd.happytalk.io/api/openapi` |
 | `CALLBRIDGE_DISPLAY_NUMBER` | 고객이 전화할 Callbridge 등록 수신번호 |
+| `SUPABASE_URL` | `https://dmqguebuvssjbiahumhp.supabase.co` |
+| `SUPABASE_PUBLISHABLE_KEY` | Supabase Project API publishable key |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key |
+| `API_SETTINGS_ENCRYPTION_KEY` | 32바이트 base64 암호화 키 |
 
 `CALLBRIDGE_AGENT_API_KEY`는 입력하지 않아도 됩니다. 앱이 `CALLBRIDGE_API_KEY`를 Agent 인증 키로 자동 사용합니다.
+
+암호화 키는 로컬 PowerShell에서 아래 명령으로 만들 수 있습니다.
+
+```powershell
+[Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Minimum 0 -Maximum 256 }))
+```
+
+## 3-1. Supabase 관리자 계정 만들기
+
+1. Supabase Dashboard에서 `Authentication` → `Users`로 이동합니다.
+2. `Add user`로 관리자 이메일과 비밀번호를 만듭니다.
+3. SQL Editor에서 아래 SQL을 실행해 관리자 권한을 부여합니다.
+
+```sql
+update auth.users
+set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || '{"crm_role":"admin"}'::jsonb
+where email = '관리자이메일@example.com';
+```
+
+4. Render 배포 CRM에서 `API 설정`을 누르고 해당 이메일/비밀번호로 로그인합니다.
+5. OpenAI, Solapi, Callbridge API 키를 CRM 관리자 화면에서 저장합니다.
 
 ## 4. 배포 확인
 

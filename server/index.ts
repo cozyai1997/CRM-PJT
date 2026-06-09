@@ -34,7 +34,21 @@ import {
   type CallbridgeSessionStartMessage
 } from "./services/callbridge";
 import { createOpenAiRealtimeTranscriber, type RealtimeTranscriber } from "./services/realtimeTranscription";
+import {
+  getEffectiveRuntimeEnv,
+  hydrateRemoteApiSettingsCache,
+  replaceRemoteApiSettingsCache
+} from "./services/runtimeApiSettings";
 import { getServerBindHost, getServerListenUrl } from "./services/runtimeConfig";
+import { parseApiSettingsEncryptionKey } from "./services/settingsEncryption";
+import { saveRemoteApiSettings } from "./services/supabaseApiSettingsStore";
+import {
+  buildAdminAuthConfigResponse,
+  createSupabaseServiceClient,
+  getBearerToken,
+  isSupabaseAdminConfigured,
+  verifySupabaseAdminToken
+} from "./services/supabaseAdmin";
 import { VoiceEventBus } from "./services/voiceEventBus";
 import type { CallSession } from "./types";
 
@@ -106,6 +120,64 @@ const safeCallbridgeError = (error: unknown) => {
   };
 };
 
+const getRequestEnv = async () => {
+  try {
+    await hydrateRemoteApiSettingsCache(process.env);
+  } catch (error) {
+    console.warn(
+      `Remote API settings could not be loaded: ${error instanceof Error ? error.message : "Unknown remote settings error"}`
+    );
+  }
+
+  return getEffectiveRuntimeEnv(process.env);
+};
+
+const isLocalAdminSettingsRequest = (req: express.Request) => {
+  const forwardedHost = req.headers["x-forwarded-host"];
+
+  return isLocalAdminRequest({
+    host: req.headers.host,
+    forwardedHost: Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost,
+    origin: req.headers.origin,
+    referer: req.headers.referer
+  });
+};
+
+const getAdminSettingsAccess = async (req: express.Request, res: express.Response) => {
+  if (isLocalAdminSettingsRequest(req)) {
+    return {
+      mode: "local" as const,
+      admin: null
+    };
+  }
+
+  if (!isSupabaseAdminConfigured(process.env)) {
+    res.status(503).json({
+      error: "Supabase admin settings are not configured.",
+      detail: "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY on the server before using remote admin settings."
+    });
+    return null;
+  }
+
+  const verification = await verifySupabaseAdminToken(
+    getBearerToken(req.headers.authorization),
+    createSupabaseServiceClient(process.env)
+  );
+
+  if (!verification.ok) {
+    res.status(verification.status).json({
+      error: verification.error,
+      detail: verification.detail
+    });
+    return null;
+  }
+
+  return {
+    mode: "remote" as const,
+    admin: verification
+  };
+};
+
 const sendJson = (socket: WebSocket | undefined, payload: unknown) => {
   if (socket?.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(payload));
@@ -167,7 +239,8 @@ const completeTranscript = async (callSessionId: string, transcript: string, age
 
 const processCallAnalysis = async (callSessionId: string) => {
   try {
-    assertOpenAiApiKey(process.env);
+    const env = await getRequestEnv();
+    assertOpenAiApiKey(env);
     const state = await store.listState();
     const callSession = state.callSessions.find((item) => item.id === callSessionId);
     if (!callSession?.finalTranscript?.trim()) return;
@@ -178,8 +251,8 @@ const processCallAnalysis = async (callSessionId: string) => {
     if (!customer || !site) return;
 
     await store.updateCallSession(callSessionId, { aiAnalysisStatus: "queued" });
-    const openai = createOpenAiClient(process.env);
-    const { analysisModel } = openAiModelsFromEnv(process.env);
+    const openai = createOpenAiClient(env);
+    const { analysisModel } = openAiModelsFromEnv(env);
     const analysis = await analyzeTranscript(
       {
         transcript: callSession.finalTranscript,
@@ -224,7 +297,9 @@ const completeCallSession = async (callSessionId: string) => {
 };
 
 const attachRealtimeTranscriber = (callSessionId: string, agentSocket: WebSocket) => {
-  if (!process.env.OPENAI_API_KEY) {
+  const env = getEffectiveRuntimeEnv(process.env);
+
+  if (!env.OPENAI_API_KEY) {
     callEvents.publish("transcript.status", {
       callSessionId,
       status: "disabled",
@@ -234,8 +309,8 @@ const attachRealtimeTranscriber = (callSessionId: string, agentSocket: WebSocket
   }
 
   const transcriber = createOpenAiRealtimeTranscriber({
-    apiKey: process.env.OPENAI_API_KEY,
-    model: process.env.OPENAI_REALTIME_TRANSCRIPTION_MODEL ?? "gpt-realtime-whisper",
+    apiKey: env.OPENAI_API_KEY,
+    model: env.OPENAI_REALTIME_TRANSCRIPTION_MODEL ?? "gpt-realtime-whisper",
     onDelta: (delta) => {
       void appendTranscriptDelta(callSessionId, delta);
     },
@@ -374,10 +449,11 @@ browserAudioWss.on("connection", (socket, req) => {
   });
 });
 
-app.get("/api/health", (_req, res) => {
+app.get("/api/health", async (_req, res) => {
+  const env = await getRequestEnv();
   let openAiConfigured = false;
   try {
-    assertOpenAiApiKey(process.env);
+    assertOpenAiApiKey(env);
     openAiConfigured = true;
   } catch {
     openAiConfigured = false;
@@ -386,9 +462,9 @@ app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
     openAiConfigured,
-    solapiConfigured: isSolapiConfigured(process.env),
-    solapiSenderNumberConfigured: Boolean(process.env.SOLAPI_SENDER_NUMBER?.trim()),
-    callbridgeConfigured: getCallbridgeConfigStatus(process.env).configured,
+    solapiConfigured: isSolapiConfigured(env),
+    solapiSenderNumberConfigured: Boolean(env.SOLAPI_SENDER_NUMBER?.trim()),
+    callbridgeConfigured: getCallbridgeConfigStatus(env).configured,
     realtimeTranscriptionPhase: "callbridge",
     docs: {
       audio: "https://developers.openai.com/api/docs/guides/audio",
@@ -399,10 +475,11 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-app.get("/api/callbridge/config", (_req, res) => {
+app.get("/api/callbridge/config", async (_req, res) => {
+  const env = await getRequestEnv();
   res.json({
     ok: true,
-    ...getCallbridgeConfigStatus(process.env),
+    ...getCallbridgeConfigStatus(env),
     docs: {
       developers: "https://blumnai.oopy.io/callbridge/developers",
       websocket: "https://blumnai.oopy.io/325c0b11-04dd-801f-bad8-c196227ffe18",
@@ -424,38 +501,43 @@ app.get("/api/callbridge/events", (req, res) => {
   });
 });
 
-const requireLocalAdminHost: express.RequestHandler = (req, res, next) => {
-  const forwardedHost = req.headers["x-forwarded-host"];
-
-  if (
-    !isLocalAdminRequest({
-      host: req.headers.host,
-      forwardedHost: Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost,
-      origin: req.headers.origin,
-      referer: req.headers.referer
-    })
-  ) {
-    res.status(403).json({
-      error: "Admin API settings are available only from the local CRM address.",
-      detail: "Open the CRM through http://127.0.0.1 or http://localhost before changing API settings."
-    });
-    return;
-  }
-
-  next();
-};
-
-app.get("/api/admin/api-settings", requireLocalAdminHost, (_req, res) => {
-  res.json(buildAdminApiSettingsResponse(process.env));
+app.get("/api/admin/auth-config", (_req, res) => {
+  res.json(buildAdminAuthConfigResponse(process.env));
 });
 
-app.post("/api/admin/api-settings", requireLocalAdminHost, (req, res) => {
+app.get("/api/admin/api-settings", async (req, res) => {
+  const access = await getAdminSettingsAccess(req, res);
+  if (!access) return;
+
+  const env = access.mode === "remote" ? await getRequestEnv() : getEffectiveRuntimeEnv(process.env);
+  res.json(buildAdminApiSettingsResponse(env));
+});
+
+app.post("/api/admin/api-settings", async (req, res) => {
   try {
-    const settings = saveAdminApiSettings(req.body, {
-      envFilePath: envLocalPath,
-      exampleFilePath: envExamplePath,
-      env: process.env
+    const access = await getAdminSettingsAccess(req, res);
+    if (!access) return;
+
+    if (access.mode === "local") {
+      const settings = saveAdminApiSettings(req.body, {
+        envFilePath: envLocalPath,
+        exampleFilePath: envExamplePath,
+        env: process.env
+      });
+      res.json(settings);
+      return;
+    }
+
+    const encryptionKey = process.env.API_SETTINGS_ENCRYPTION_KEY?.trim() ?? "";
+    parseApiSettingsEncryptionKey({ API_SETTINGS_ENCRYPTION_KEY: encryptionKey });
+    const saved = await saveRemoteApiSettings(req.body, {
+      client: createSupabaseServiceClient(process.env),
+      env: getEffectiveRuntimeEnv(process.env),
+      encryptionKey,
+      updatedBy: access.admin.userId
     });
+    replaceRemoteApiSettingsCache(saved);
+    const settings = buildAdminApiSettingsResponse(getEffectiveRuntimeEnv(process.env));
     res.json(settings);
   } catch (error) {
     res.status(400).json({
@@ -467,7 +549,7 @@ app.post("/api/admin/api-settings", requireLocalAdminHost, (req, res) => {
 
 app.post("/api/callbridge/calls/:id/hangup", async (req, res) => {
   try {
-    const config = getCallbridgeConfig(process.env);
+    const config = getCallbridgeConfig(await getRequestEnv());
     const callSession = await store.findCallSessionById(req.params.id);
 
     if (!callSession) {
@@ -502,6 +584,7 @@ app.get("/api/state", async (_req, res) => {
 
 app.post("/api/consultations", upload.single("recording"), async (req, res) => {
   try {
+    const env = await getRequestEnv();
     const customerName = String(req.body.customerName ?? "").trim() || "이름 미상";
     const phone = String(req.body.phone ?? "").trim();
     const siteName = String(req.body.siteName ?? "").trim() || "미지정 현장";
@@ -518,8 +601,8 @@ app.post("/api/consultations", upload.single("recording"), async (req, res) => {
       return;
     }
 
-    const openai = createOpenAiClient(process.env);
-    const { transcriptionModel, analysisModel } = openAiModelsFromEnv(process.env);
+    const openai = createOpenAiClient(env);
+    const { transcriptionModel, analysisModel } = openAiModelsFromEnv(env);
     const transcript = req.file
       ? await transcribeRecording(
           {
@@ -575,6 +658,7 @@ app.post("/api/reservations", async (req, res) => {
 });
 
 app.post("/api/messages", async (req, res) => {
+  const env = await getRequestEnv();
   const customerId = String(req.body.customerId);
   const siteId = String(req.body.siteId);
   const messageTemplateType = String(req.body.messageTemplateType ?? "manual_followup");
@@ -583,7 +667,7 @@ app.post("/api/messages", async (req, res) => {
   let solapiMessageId: string | null = null;
   let sendStatus = "queued";
 
-  if (isSolapiConfigured(process.env)) {
+  if (isSolapiConfigured(env)) {
     const state = await store.listState();
     const customer = state.customers.find((item) => item.id === customerId);
 
@@ -600,7 +684,7 @@ app.post("/api/messages", async (req, res) => {
           templateType: messageTemplateType
         },
         {
-          config: getSolapiConfig(process.env)
+          config: getSolapiConfig(env)
         }
       );
       solapiMessageId = result.providerMessageId;
@@ -638,6 +722,7 @@ app.post("/api/messages", async (req, res) => {
 
 app.post("/api/messages/refine", async (req, res) => {
   try {
+    const env = await getRequestEnv();
     const draft = String(req.body.draft ?? "").trim();
 
     if (!draft) {
@@ -645,8 +730,8 @@ app.post("/api/messages/refine", async (req, res) => {
       return;
     }
 
-    const openai = createOpenAiClient(process.env);
-    const { analysisModel } = openAiModelsFromEnv(process.env);
+    const openai = createOpenAiClient(env);
+    const { analysisModel } = openAiModelsFromEnv(env);
     const refinedText = await refineMessageDraft(
       {
         draft,
@@ -715,7 +800,7 @@ httpServer.on("upgrade", (req, socket, head) => {
 
   if (url.pathname === "/api/callbridge/agent") {
     try {
-      const config = getCallbridgeConfig(process.env);
+      const config = getCallbridgeConfig(getEffectiveRuntimeEnv(process.env));
       if (!isAuthorizedCallbridgeAgentRequest(config, { headers: req.headers, url: req.url })) {
         rejectUpgrade(socket, 401, "Unauthorized");
         return;
@@ -737,6 +822,14 @@ httpServer.on("upgrade", (req, socket, head) => {
   }
 
   socket.destroy();
+});
+
+void hydrateRemoteApiSettingsCache(process.env).catch((error) => {
+  console.warn(
+    `Remote API settings could not be loaded on startup: ${
+      error instanceof Error ? error.message : "Unknown remote settings error"
+    }`
+  );
 });
 
 httpServer.listen(port, host, () => {

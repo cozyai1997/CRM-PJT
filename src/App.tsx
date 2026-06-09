@@ -31,7 +31,9 @@ import {
   createConsultation,
   createMessage,
   createReservation,
+  ApiError,
   getAdminApiSettings,
+  getAdminAuthConfig,
   getCallbridgeConfig,
   getCrmState,
   getDashboard,
@@ -40,6 +42,7 @@ import {
   refineMessageDraft,
   saveAdminApiSettings
 } from "./api";
+import { createAdminAuthClient, getAdminSession, signInAdmin, signOutAdmin } from "./adminAuth";
 import {
   buildCallbridgeAgentWebSocketUrl,
   canRegisterCallbridgeWebSocket,
@@ -51,6 +54,7 @@ import { createCallbridgeBrowserClient, type CallbridgeBrowserClient } from "./c
 import type {
   CallSession,
   AdminApiSettingsResponse,
+  AdminAuthConfigResponse,
   CallbridgeConfigResponse,
   CallbridgeEvent,
   ConsultationLog,
@@ -145,6 +149,7 @@ const eventCallSession = (event: CallbridgeEvent): CallSession | null => {
 export function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [callbridgeConfig, setCallbridgeConfig] = useState<CallbridgeConfigResponse | null>(null);
+  const [adminAuthConfig, setAdminAuthConfig] = useState<AdminAuthConfigResponse | null>(null);
   const [adminSettings, setAdminSettings] = useState<AdminApiSettingsResponse | null>(null);
   const [dashboard, setDashboard] = useState<DashboardMetrics>(emptyDashboard);
   const [crmState, setCrmState] = useState<CrmState>(emptyState);
@@ -157,8 +162,13 @@ export function App() {
   const [isCallConnecting, setIsCallConnecting] = useState(false);
   const [isCallMuted, setIsCallMuted] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [isAdminSigningIn, setIsAdminSigningIn] = useState(false);
   const [messageDraft, setMessageDraft] = useState("");
   const [adminForm, setAdminForm] = useState<Record<string, string>>({});
+  const [adminLoginForm, setAdminLoginForm] = useState({ email: "", password: "" });
+  const [adminAccessToken, setAdminAccessToken] = useState<string | null>(null);
+  const [adminEmail, setAdminEmail] = useState<string | null>(null);
+  const [isAdminAuthRequired, setIsAdminAuthRequired] = useState(false);
   const [visibleSecretFields, setVisibleSecretFields] = useState<Record<string, boolean>>({});
   const [webSocketCopyStatus, setWebSocketCopyStatus] = useState("");
   const [callStatus, setCallStatus] = useState("상담석 대기");
@@ -224,10 +234,26 @@ export function App() {
     });
   };
 
-  const loadAdminSettings = async () => {
-    const settings = await getAdminApiSettings();
+  const loadAdminAuthConfig = async () => {
+    const config = await getAdminAuthConfig();
+    setAdminAuthConfig(config);
+
+    const client = createAdminAuthClient(config);
+    const session = await getAdminSession(client);
+    if (session?.access_token) {
+      setAdminAccessToken(session.access_token);
+      setAdminEmail(session.user.email ?? null);
+      return session.access_token;
+    }
+
+    return null;
+  };
+
+  const loadAdminSettings = async (accessToken = adminAccessToken) => {
+    const settings = await getAdminApiSettings(accessToken);
     setAdminSettings(settings);
     setAdminForm(createAdminForm(settings));
+    setIsAdminAuthRequired(false);
   };
 
   const handleOpenAdminSettings = async () => {
@@ -236,10 +262,65 @@ export function App() {
     setIsAdminOpen(true);
 
     try {
-      await loadAdminSettings();
+      const token = await loadAdminAuthConfig();
+      await loadAdminSettings(token);
     } catch (settingsError) {
+      if (settingsError instanceof ApiError && [401, 403].includes(settingsError.status)) {
+        setIsAdminAuthRequired(true);
+        setAdminSettings(null);
+        setError("");
+        return;
+      }
+
       setError(settingsError instanceof Error ? settingsError.message : "관리자 API 설정을 불러오지 못했습니다.");
     }
+  };
+
+  const handleAdminLoginFieldChange = (name: "email" | "password", value: string) => {
+    setAdminLoginForm((current) => ({
+      ...current,
+      [name]: value
+    }));
+  };
+
+  const handleAdminSignIn = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError("");
+    setActionStatus("");
+    setIsAdminSigningIn(true);
+
+    try {
+      const config = adminAuthConfig ?? (await getAdminAuthConfig());
+      setAdminAuthConfig(config);
+      const client = createAdminAuthClient(config);
+      if (!client) {
+        throw new Error("Supabase 관리자 로그인이 설정되지 않았습니다.");
+      }
+
+      const session = await signInAdmin(client, adminLoginForm.email.trim(), adminLoginForm.password);
+      if (!session?.access_token) {
+        throw new Error("Supabase 세션을 만들지 못했습니다.");
+      }
+
+      setAdminAccessToken(session.access_token);
+      setAdminEmail(session.user.email ?? adminLoginForm.email.trim());
+      setAdminLoginForm({ email: "", password: "" });
+      await loadAdminSettings(session.access_token);
+      setActionStatus("관리자 로그인이 완료되었습니다.");
+    } catch (authError) {
+      setError(authError instanceof Error ? authError.message : "관리자 로그인에 실패했습니다.");
+    } finally {
+      setIsAdminSigningIn(false);
+    }
+  };
+
+  const handleAdminSignOut = async () => {
+    await signOutAdmin(createAdminAuthClient(adminAuthConfig ?? { ok: true, configured: false, supabaseUrl: "", publishableKey: "" }));
+    setAdminAccessToken(null);
+    setAdminEmail(null);
+    setAdminSettings(null);
+    setAdminForm({});
+    setIsAdminAuthRequired(true);
   };
 
   const handleAdminFieldChange = (name: string, value: string) => {
@@ -263,12 +344,15 @@ export function App() {
     setIsSavingSettings(true);
 
     try {
-      const settings = await saveAdminApiSettings(adminForm);
+      const settings = await saveAdminApiSettings(adminForm, adminAccessToken);
       setAdminSettings(settings);
       setAdminForm(createAdminForm(settings));
       await refresh();
       setActionStatus("관리자 API 설정이 저장되었습니다.");
     } catch (settingsError) {
+      if (settingsError instanceof ApiError && [401, 403].includes(settingsError.status)) {
+        setIsAdminAuthRequired(true);
+      }
       setError(settingsError instanceof Error ? settingsError.message : "관리자 API 설정 저장에 실패했습니다.");
     } finally {
       setIsSavingSettings(false);
@@ -576,8 +660,15 @@ export function App() {
         <AdminSettingsPanel
           settings={adminSettings}
           formValues={adminForm}
+          authRequired={isAdminAuthRequired}
+          adminEmail={adminEmail}
+          loginValues={adminLoginForm}
           isSaving={isSavingSettings}
+          isSigningIn={isAdminSigningIn}
           visibleSecrets={visibleSecretFields}
+          onLoginChange={handleAdminLoginFieldChange}
+          onSignIn={handleAdminSignIn}
+          onSignOut={handleAdminSignOut}
           onChange={handleAdminFieldChange}
           onReload={loadAdminSettings}
           onSubmit={handleSaveAdminSettings}
@@ -826,11 +917,18 @@ function KeyValue({ label, value }: { label: string; value: string }) {
 function AdminSettingsPanel({
   settings,
   formValues,
+  authRequired,
+  adminEmail,
+  loginValues,
   isSaving,
+  isSigningIn,
   visibleSecrets,
   callbridgeAgentWebSocketUrl,
   canUseCallbridgeAgentUrl,
   webSocketCopyStatus,
+  onLoginChange,
+  onSignIn,
+  onSignOut,
   onChange,
   onCopyCallbridgeWebSocket,
   onReload,
@@ -839,11 +937,18 @@ function AdminSettingsPanel({
 }: {
   settings: AdminApiSettingsResponse | null;
   formValues: Record<string, string>;
+  authRequired: boolean;
+  adminEmail: string | null;
+  loginValues: { email: string; password: string };
   isSaving: boolean;
+  isSigningIn: boolean;
   visibleSecrets: Record<string, boolean>;
   callbridgeAgentWebSocketUrl: string;
   canUseCallbridgeAgentUrl: boolean;
   webSocketCopyStatus: string;
+  onLoginChange(name: "email" | "password", value: string): void;
+  onSignIn(event: FormEvent<HTMLFormElement>): void;
+  onSignOut(): Promise<void>;
   onChange(name: string, value: string): void;
   onCopyCallbridgeWebSocket(): void;
   onReload(): Promise<void>;
@@ -860,10 +965,51 @@ function AdminSettingsPanel({
         <ShieldCheck size={18} />
       </div>
 
-      {!settings ? (
+      {authRequired ? (
+        <form className="admin-login-form" onSubmit={onSignIn}>
+          <div>
+            <strong>관리자 로그인</strong>
+            <span>Supabase 관리자 계정으로 로그인해야 API 키를 수정할 수 있습니다.</span>
+          </div>
+          <label>
+            이메일
+            <input
+              autoComplete="username"
+              type="email"
+              value={loginValues.email}
+              onChange={(event) => onLoginChange("email", event.target.value)}
+              placeholder="admin@example.com"
+              required
+            />
+          </label>
+          <label>
+            비밀번호
+            <input
+              autoComplete="current-password"
+              type="password"
+              value={loginValues.password}
+              onChange={(event) => onLoginChange("password", event.target.value)}
+              placeholder="Supabase password"
+              required
+            />
+          </label>
+          <button className="primary-button" type="submit" disabled={isSigningIn}>
+            {isSigningIn ? <Clock3 size={16} /> : <ShieldCheck size={16} />}
+            {isSigningIn ? "로그인 중" : "관리자 로그인"}
+          </button>
+        </form>
+      ) : !settings ? (
         <div className="admin-loading">설정 정보를 불러오는 중입니다.</div>
       ) : (
         <form className="admin-settings-form" onSubmit={onSubmit}>
+          {adminEmail && (
+            <div className="admin-session-row">
+              <span>{adminEmail}</span>
+              <button className="secondary-button" type="button" onClick={() => void onSignOut()} disabled={isSaving}>
+                로그아웃
+              </button>
+            </div>
+          )}
           {settings.sections.map((section) => (
             <fieldset className="admin-settings-section" key={section.id}>
               <legend>

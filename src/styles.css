@@ -209,11 +209,77 @@ button {
   font-weight: 800;
 }
 
+.admin-login-form {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px 16px;
+}
+
+.admin-login-form > div {
+  display: grid;
+  gap: 4px;
+}
+
+.admin-login-form strong {
+  color: #1d2b3a;
+  font-size: 15px;
+}
+
+.admin-login-form span {
+  color: #637489;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.admin-login-form label {
+  display: grid;
+  gap: 6px;
+  color: #53677f;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.admin-login-form input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid #cdd8e4;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #fff;
+  color: #15202b;
+}
+
 .admin-settings-form {
   display: grid;
   gap: 14px;
   padding: 14px 16px 16px;
 }
+
+.admin-session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #d7dfe8;
+  border-radius: 8px;
+  background: #f7fafc;
+}
+
+.admin-session-row span {
+  min-width: 0;
+  overflow: hidden;
+  color: #53677f;
+  font-size: 12px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+}
+
+.admin-session-row .secondary-button {
+  width: auto;
+  min-width: 96px;
+}
+
 
 .admin-settings-section {
   display: grid;

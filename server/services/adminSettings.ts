@@ -155,7 +155,7 @@ export interface AdminApiSettingsResponse {
   saveMode: "blank-secret-keeps-existing-value";
 }
 
-const allowedNames = new Set<AdminApiSettingName>(
+export const allowedAdminApiSettingNames = new Set<AdminApiSettingName>(
   adminApiSettingSections.flatMap((section) => section.fields.map((field) => field.name))
 );
 const secretNames = new Set<AdminApiSettingName>(
@@ -217,7 +217,7 @@ export const normalizeAdminApiSettingsInput = (payload: unknown): AdminApiSettin
   const updates: AdminApiSettingsUpdate = {};
 
   for (const [name, value] of Object.entries(source)) {
-    if (!allowedNames.has(name as AdminApiSettingName) || typeof value !== "string") {
+    if (!allowedAdminApiSettingNames.has(name as AdminApiSettingName) || typeof value !== "string") {
       continue;
     }
 
@@ -248,7 +248,7 @@ const formatEnvLine = (name: AdminApiSettingName, value: string) => `${name}=${f
 
 const defaultCallbridgeBaseUrl = "https://bnd.happytalk.io/api/openapi";
 
-const autoFillAdminApiSettings = (
+export const autoFillAdminApiSettings = (
   updates: AdminApiSettingsUpdate,
   env: Record<string, string | undefined>
 ): AdminApiSettingsUpdate => {
@@ -265,8 +265,15 @@ const autoFillAdminApiSettings = (
   return next;
 };
 
+export const normalizeAndAutoFillAdminApiSettings = (
+  payload: unknown,
+  env: Record<string, string | undefined>
+) => autoFillAdminApiSettings(normalizeAdminApiSettingsInput(payload), env);
+
 export const updateEnvContent = (content: string, updates: AdminApiSettingsUpdate) => {
-  const updateEntries = Object.entries(updates).filter(([name]) => allowedNames.has(name as AdminApiSettingName));
+  const updateEntries = Object.entries(updates).filter(([name]) =>
+    allowedAdminApiSettingNames.has(name as AdminApiSettingName)
+  );
 
   if (updateEntries.length === 0) {
     return content;
@@ -314,7 +321,7 @@ export const saveAdminApiSettings = (
   }
 ) => {
   const env = options.env ?? process.env;
-  const updates = autoFillAdminApiSettings(normalizeAdminApiSettingsInput(payload), env);
+  const updates = normalizeAndAutoFillAdminApiSettings(payload, env);
   const existingContent = existsSync(options.envFilePath)
     ? readFileSync(options.envFilePath, "utf8")
     : options.exampleFilePath && existsSync(options.exampleFilePath)

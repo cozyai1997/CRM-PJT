@@ -1,4 +1,5 @@
 import type {
+  AdminAuthConfigResponse,
   AdminApiSettingsResponse,
   CallSession,
   CallbridgeConfigResponse,
@@ -8,15 +9,32 @@ import type {
   HealthResponse
 } from "./types";
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 const readJson = async <T>(response: Response): Promise<T> => {
   const body = await response.json();
 
   if (!response.ok) {
-    throw new Error(body.detail || body.error || "요청 처리에 실패했습니다.");
+    throw new ApiError(body.detail || body.error || "요청 처리에 실패했습니다.", response.status);
   }
 
   return body as T;
 };
+
+const authHeaders = (accessToken?: string | null): Record<string, string> =>
+  accessToken
+    ? {
+        Authorization: `Bearer ${accessToken}`
+      }
+    : {};
 
 export const getHealth = async () => readJson<HealthResponse>(await fetch("/api/health"));
 
@@ -26,14 +44,20 @@ export const getCrmState = async () => readJson<CrmState>(await fetch("/api/stat
 
 export const getCallbridgeConfig = async () => readJson<CallbridgeConfigResponse>(await fetch("/api/callbridge/config"));
 
-export const getAdminApiSettings = async () =>
-  readJson<AdminApiSettingsResponse>(await fetch("/api/admin/api-settings"));
+export const getAdminAuthConfig = async () => readJson<AdminAuthConfigResponse>(await fetch("/api/admin/auth-config"));
 
-export const saveAdminApiSettings = async (settings: Record<string, string>) =>
+export const getAdminApiSettings = async (accessToken?: string | null) =>
+  readJson<AdminApiSettingsResponse>(
+    await fetch("/api/admin/api-settings", {
+      headers: authHeaders(accessToken)
+    })
+  );
+
+export const saveAdminApiSettings = async (settings: Record<string, string>, accessToken?: string | null) =>
   readJson<AdminApiSettingsResponse>(
     await fetch("/api/admin/api-settings", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaders(accessToken) },
       body: JSON.stringify({ settings })
     })
   );

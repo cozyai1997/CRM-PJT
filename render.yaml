@@ -21,6 +21,14 @@ services:
         value: gpt-realtime-whisper
       - key: CALLBRIDGE_BASE_URL
         value: https://bnd.happytalk.io/api/openapi
+      - key: SUPABASE_URL
+        value: https://dmqguebuvssjbiahumhp.supabase.co
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: API_SETTINGS_ENCRYPTION_KEY
+        sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: SOLAPI_API_KEY
