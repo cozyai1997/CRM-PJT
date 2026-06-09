@@ -17,7 +17,7 @@
 6. Build Command는 아래처럼 입력합니다.
 
 ```bash
-npm install && npm run build
+npm ci --include=dev && npm run build
 ```
 
 7. Start Command는 아래처럼 입력합니다.
