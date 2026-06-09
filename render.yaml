@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: crm-pjt
+    runtime: node
+    plan: starter
+    region: singapore
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: OPENAI_TRANSCRIPTION_MODEL
+        value: gpt-4o-mini-transcribe
+      - key: OPENAI_ANALYSIS_MODEL
+        value: gpt-5-mini
+      - key: OPENAI_REALTIME_TRANSCRIPTION_MODEL
+        value: gpt-realtime-whisper
+      - key: CALLBRIDGE_BASE_URL
+        value: https://bnd.happytalk.io/api/openapi
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: SOLAPI_API_KEY
+        sync: false
+      - key: SOLAPI_API_SECRET
+        sync: false
+      - key: SOLAPI_SENDER_NUMBER
+        sync: false
+      - key: CALLBRIDGE_API_KEY
+        sync: false
+      - key: CALLBRIDGE_DISPLAY_NUMBER
+        sync: false
